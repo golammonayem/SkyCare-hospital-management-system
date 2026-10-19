@@ -6,11 +6,6 @@ const path = require('path');
 const schemaPath = path.join(__dirname, 'schema.sql');
 
 const REQUIRED_TIDB_ENV = ['TIDB_HOST', 'TIDB_PORT', 'TIDB_USER', 'TIDB_PASSWORD', 'TIDB_DATABASE'];
-const missingEnv = REQUIRED_TIDB_ENV.filter((key) => !process.env[key]);
-
-if (missingEnv.length) {
-  throw new Error(`[SkyCare] Missing TiDB environment variables: ${missingEnv.join(', ')}`);
-}
 
 function resolveSslConfig() {
   const disableTls = String(process.env.TIDB_DISABLE_TLS || 'false').toLowerCase() === 'true';
@@ -28,7 +23,7 @@ function resolveSslConfig() {
 
 const db = mysql.createPool({
   host: process.env.TIDB_HOST,
-  port: Number(process.env.TIDB_PORT),
+  port: Number(process.env.TIDB_PORT || 4000),
   user: process.env.TIDB_USER,
   password: process.env.TIDB_PASSWORD,
   database: process.env.TIDB_DATABASE,
@@ -78,6 +73,11 @@ function loadSchemaStatements() {
 }
 
 async function initializeDatabase() {
+  const missingEnv = REQUIRED_TIDB_ENV.filter((key) => !process.env[key]);
+  if (missingEnv.length) {
+    throw new Error(`[SkyCare] Missing TiDB environment variables: ${missingEnv.join(', ')}`);
+  }
+
   await db.query('SELECT 1');
   await runStatements(loadSchemaStatements());
 
