@@ -11,6 +11,11 @@ const { db, initializeDatabase } = require('./database/init');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const startupState = {
+  databaseReady: false,
+  lastError: null,
+  attempts: 0
+};
 
 const cloudinaryConfigured = Boolean(
   process.env.CLOUDINARY_URL ||
@@ -56,6 +61,10 @@ const upload = multer({
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function fetchAll(sql, params = []) {
   const [rows] = await db.query(sql, params);
@@ -784,7 +793,28 @@ async function auth(req, res, next) {
 // CORE ROUTES
 // ═══════════════════════════════════════════
 app.get('/healthz', (req, res) => {
-  res.status(200).json({ ok: true, timestamp: new Date().toISOString() });
+  const payload = {
+    ok: startupState.databaseReady,
+    databaseReady: startupState.databaseReady,
+    attempts: startupState.attempts,
+    timestamp: new Date().toISOString()
+  };
+
+  if (startupState.lastError) {
+    payload.error = startupState.lastError.message;
+  }
+
+  res.status(startupState.databaseReady ? 200 : 503).json(payload);
+});
+
+app.use('/api', (req, res, next) => {
+  if (startupState.databaseReady) {
+    return next();
+  }
+
+  return res.status(503).json({
+    error: 'SkyCare is starting up. Please retry in a few seconds.'
+  });
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -1487,13 +1517,33 @@ function startKeepAlive() {
   setInterval(doPing, 14 * 60 * 1000);
 }
 
-async function bootstrap() {
-  await initializeDatabase();
+async function initializeDatabaseWithRetry() {
+  for (;;) {
+    startupState.attempts += 1;
 
+    try {
+      await initializeDatabase();
+      startupState.databaseReady = true;
+      startupState.lastError = null;
+      console.log(`[SkyCare] Database ready after attempt ${startupState.attempts}.`);
+      startKeepAlive();
+      return;
+    } catch (error) {
+      startupState.databaseReady = false;
+      startupState.lastError = error;
+      const backoffMs = Math.min(30000, 2000 * startupState.attempts);
+      console.error(`[SkyCare] Database init attempt ${startupState.attempts} failed: ${error.message}. Retrying in ${Math.round(backoffMs / 1000)}s...`);
+      await wait(backoffMs);
+    }
+  }
+}
+
+async function bootstrap() {
   app.listen(PORT, () => {
     console.log(`\n[SkyCare] HMS running at http://localhost:${PORT}\n`);
-    startKeepAlive();
   });
+
+  await initializeDatabaseWithRetry();
 }
 
 bootstrap().catch((error) => {
